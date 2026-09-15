@@ -56,6 +56,9 @@
 #define REG_DIG_VIN_VIN0       0
 
 #define REG_DIG_PULL_CTL       0x42
+/* REG_DIG_PULL_CTL values, matching the PMIC GPIO hardware */
+#define REG_DIG_PULL_UP        0x0	/* 30 kOhm pull-up */
+#define REG_DIG_PULL_DOWN      0x4
 #define REG_DIG_PULL_NO_PU     0x5
 
 #define REG_LV_MV_OUTPUT_CTL	0x44
@@ -127,11 +130,18 @@ static int qcom_gpio_set_direction(struct udevice *dev, unsigned int offset,
 
 	_qcom_gpio_set_direction(dev, offset, input, value);
 
-	/* Set the right pull (no pull) */
-	ret = pmic_reg_write(plat->pmic, gpio_base + REG_DIG_PULL_CTL,
-			     REG_DIG_PULL_NO_PU);
-	if (ret < 0)
-		return ret;
+	/*
+	 * Only outputs get no pull here.  Leave inputs alone so that a pull
+	 * configured through pinctrl survives - forcing no-pull on an input
+	 * leaves a button pin floating, and with GPIO_ACTIVE_LOW that reads
+	 * back as permanently pressed.
+	 */
+	if (!input) {
+		ret = pmic_reg_write(plat->pmic, gpio_base + REG_DIG_PULL_CTL,
+				     REG_DIG_PULL_NO_PU);
+		if (ret < 0)
+			return ret;
+	}
 
 	/* Configure output pin drivers if needed */
 	if (!input) {
@@ -366,6 +376,8 @@ U_BOOT_DRIVER(qcom_pmic_gpio) = {
 };
 
 static const struct pinconf_param qcom_pmic_pinctrl_conf_params[] = {
+	{ "bias-pull-up",   PIN_CONFIG_BIAS_PULL_UP,   REG_DIG_PULL_UP },
+	{ "bias-pull-down", PIN_CONFIG_BIAS_PULL_DOWN, REG_DIG_PULL_DOWN },
 	{ "output-high", PIN_CONFIG_OUTPUT_ENABLE, 1 },
 	{ "output-low", PIN_CONFIG_OUTPUT, 0 },
 };
@@ -390,9 +402,22 @@ static const char *qcom_pmic_pinctrl_get_pin_name(struct udevice *dev, unsigned 
 static int qcom_pmic_pinctrl_pinconf_set(struct udevice *dev, unsigned int selector,
 					 unsigned int param, unsigned int arg)
 {
-	/* We only support configuring the pin as an output, either low or high */
-	return _qcom_gpio_set_direction(dev, selector, false,
-					param == PIN_CONFIG_OUTPUT_ENABLE);
+	struct qcom_pmic_gpio_data *plat = dev_get_plat(dev);
+	u32 gpio_base = plat->pid + REG_OFFSET(selector);
+
+	switch (param) {
+	case PIN_CONFIG_BIAS_PULL_UP:
+	case PIN_CONFIG_BIAS_PULL_DOWN:
+		/* arg carries the REG_DIG_PULL_CTL value from the param table */
+		return pmic_reg_write(plat->pmic, gpio_base + REG_DIG_PULL_CTL,
+				      arg);
+	case PIN_CONFIG_OUTPUT_ENABLE:
+		return _qcom_gpio_set_direction(dev, selector, false, true);
+	case PIN_CONFIG_OUTPUT:
+		return _qcom_gpio_set_direction(dev, selector, false, arg);
+	}
+
+	return -EINVAL;
 }
 
 static const char *qcom_pmic_pinctrl_get_function_name(struct udevice *dev, unsigned int selector)
