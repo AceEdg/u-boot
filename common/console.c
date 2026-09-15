@@ -837,8 +837,19 @@ int console_record_init(void)
 	ret = membuf_new((struct membuf *)&gd->console_in,
 			 CONFIG_CONSOLE_RECORD_IN_SIZE);
 
-	/* Start recording from the beginning */
+	/*
+	 * Start recording from the beginning of the fresh buffer.
+	 *
+	 * This runs twice: once before relocation using the small
+	 * CONFIG_CONSOLE_RECORD_OUT_SIZE_F buffer, and again after relocation
+	 * with the full sized one.  The pre-relocation buffer is tiny and
+	 * essentially always overflows, so clear the stale overflow flag here
+	 * - otherwise console_record_readline() would keep returning -ENOSPC
+	 * for the rest of the run even though the new buffer has plenty of
+	 * room.
+	 */
 	gd->flags |= GD_FLG_RECORD;
+	gd->flags &= ~GD_FLG_RECORD_OVF;
 
 	return ret;
 }
