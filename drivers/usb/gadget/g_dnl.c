@@ -293,6 +293,29 @@ int g_dnl_register(const char *name)
 	debug("%s: g_dnl_driver.name = %s\n", __func__, name);
 	g_dnl_driver.name = name;
 
+	/*
+	 * Every g_dnl function shares this single device descriptor, but the
+	 * host picks a driver from the VID/PID pair.  Use the identifiers that
+	 * make the host attach the correct driver to the function being
+	 * registered.
+	 *
+	 * The serial console gadget must not reuse the Android fastboot IDs:
+	 * Windows would claim the device with its fastboot driver and no
+	 * virtual COM port would ever show up.  The standard Linux USB gadget
+	 * serial IDs make Windows attach its built-in CDC ACM driver instead.
+	 */
+	if (!strcmp(name, "usb_serial_acm")) {
+		device_desc.idVendor = cpu_to_le16(0x0525);
+		device_desc.idProduct = cpu_to_le16(0xa4a7);
+		g_dnl_string_defs[1].s = "U-Boot serial console";
+	} else {
+		device_desc.idVendor =
+			cpu_to_le16(CONFIG_USB_GADGET_VENDOR_NUM);
+		device_desc.idProduct =
+			cpu_to_le16(CONFIG_USB_GADGET_PRODUCT_NUM);
+		g_dnl_string_defs[1].s = product;
+	}
+
 	ret = usb_composite_register(&g_dnl_driver);
 	if (ret) {
 		printf("%s: failed!, error: %d\n", __func__, ret);
