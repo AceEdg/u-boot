@@ -467,11 +467,39 @@ static void dwc3_qcom_select_utmi_clk(void __iomem *qscratch_base)
 			  PIPE_UTMI_CLK_DIS);
 }
 
+static bool dwc3_qcom_has_dwc3_child(struct udevice *dev)
+{
+	ofnode child;
+
+	ofnode_for_each_subnode(child, dev_ofnode(dev)) {
+		if (ofnode_device_is_compatible(child, "snps,dwc3"))
+			return true;
+	}
+
+	return false;
+}
+
 static void dwc3_qcom_glue_configure(struct udevice *dev, int index,
 				     enum usb_dr_mode mode)
 {
 	struct dwc3_glue_data *glue = dev_get_plat(dev);
-	void __iomem *qscratch_base = map_physmem(glue->regs, 0x400, MAP_NOCACHE);
+	fdt_addr_t qscratch = glue->regs;
+	void __iomem *qscratch_base;
+
+	/*
+	 * Older Qualcomm DTs give the glue a node of its own whose reg is the
+	 * QSCRATCH region.  Newer ones (SM8450 and later, including SM8475)
+	 * merge glue and core into a single node, where QSCRATCH sits at a
+	 * fixed offset from the node base.  Getting this wrong makes the UTMI
+	 * pipe clock selection and the VBUS override below land in the wrong
+	 * registers, so the controller never comes up.
+	 */
+	if (!dwc3_qcom_has_dwc3_child(dev))
+		qscratch += SDM845_QSCRATCH_BASE_OFFSET;
+
+	log_debug("%s: qscratch at %#llx\n", dev->name, (u64)qscratch);
+
+	qscratch_base = map_physmem(qscratch, SDM845_QSCRATCH_SIZE, MAP_NOCACHE);
 	if (IS_ERR_OR_NULL(qscratch_base)) {
 		log_err("%s: Invalid qscratch base address\n", dev->name);
 		return;
@@ -484,8 +512,34 @@ static void dwc3_qcom_glue_configure(struct udevice *dev, int index,
 		dwc3_qcom_vbus_override_enable(qscratch_base, true);
 }
 
+/*
+ * Older Qualcomm DTs (SDM845 and friends) describe the DWC3 glue and the DWC3
+ * core as two separate nodes, with a "snps,dwc3" child.  Newer ones (SM8450
+ * and later, including SM8475) merge both into a single node that carries
+ * "snps,dwc3" as a fallback compatible and has no child node at all.
+ *
+ * dwc3_glue_bind() only walks subnodes when glue_get_ctrl_dev is absent, so
+ * without this hook the merged form binds no controller at all.  Return the
+ * child when it exists, otherwise fall back to the glue node itself.
+ */
+static int dwc3_qcom_glue_get_ctrl_dev(struct udevice *dev, ofnode *node)
+{
+	ofnode child;
+
+	ofnode_for_each_subnode(child, dev_ofnode(dev)) {
+		if (ofnode_device_is_compatible(child, "snps,dwc3")) {
+			*node = child;
+			return 0;
+		}
+	}
+
+	*node = dev_ofnode(dev);
+	return ofnode_valid(*node) ? 0 : -EINVAL;
+}
+
 struct dwc3_glue_ops qcom_ops = {
 	.glue_configure = dwc3_qcom_glue_configure,
+	.glue_get_ctrl_dev = dwc3_qcom_glue_get_ctrl_dev,
 };
 
 static int dwc3_rk_glue_get_ctrl_dev(struct udevice *dev, ofnode *node)
@@ -703,6 +757,7 @@ static const struct udevice_id dwc3_glue_ids[] = {
 	{ .compatible = "rockchip,rk3576-dwc3", .data = (ulong)&rk_ops },
 	{ .compatible = "rockchip,rk3588-dwc3", .data = (ulong)&rk_ops },
 	{ .compatible = "qcom,dwc3", .data = (ulong)&qcom_ops },
+	{ .compatible = "qcom,snps-dwc3", .data = (ulong)&qcom_ops },
 	{ .compatible = "fsl,imx8mp-dwc3", .data = (ulong)&imx8mp_ops },
 	{ .compatible = "fsl,imx8mq-dwc3" },
 	{ .compatible = "intel,tangier-dwc3" },
