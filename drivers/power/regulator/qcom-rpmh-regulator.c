@@ -485,6 +485,19 @@ static const struct rpmh_vreg_hw_data pmic5_ftsmps527 = {
 	.n_modes = ARRAY_SIZE(pmic_mode_map_pmic5_smps),
 };
 
+/*
+ * 5th generation PMIC high-frequency SMPS, 320 mV - 2.04 V in 8 mV steps.
+ * Needed for pm8350 smps10, which feeds the external eUSB2 repeater.
+ */
+static const struct rpmh_vreg_hw_data pmic5_hfsmps510 = {
+	.regulator_type = VRM,
+	.ops = &rpmh_regulator_vrm_drms_ops,
+	.voltage_range = REGULATOR_LINEAR_RANGE(320000, 0, 215, 8000),
+	.n_voltages = 216,
+	.pmic_mode_map = pmic_mode_map_pmic5_smps,
+	.n_modes = ARRAY_SIZE(pmic_mode_map_pmic5_smps),
+};
+
 static const struct rpmh_vreg_hw_data pmic5_pldo515_mv = {
 	.regulator_type = VRM,
 	.ops = &rpmh_regulator_vrm_drms_ops,
@@ -549,10 +562,15 @@ static const struct rpmh_vreg_init_data pm8350_vreg_data[] = {
 	RPMH_VREG("smps7",  "smp%s7",  &pmic5_ftsmps510, "vdd-s7"),
 	RPMH_VREG("smps8",  "smp%s8",  &pmic5_ftsmps510, "vdd-s8"),
 	RPMH_VREG("smps9",  "smp%s9",  &pmic5_ftsmps510, "vdd-s9"),
-	RPMH_VREG("smps10", "smp%s10", &pmic5_hfsmps510, "vdd-s10"),
 	RPMH_VREG("smps11", "smp%s11", &pmic5_hfsmps510, "vdd-s11"),
 	RPMH_VREG("smps12", "smp%s12", &pmic5_hfsmps510, "vdd-s12"),
 #endif
+	/*
+	 * smps10 is a plain fixed 1.8 V rail (vdd-s10) which the external
+	 * eUSB2 repeater on several boards needs.  The remaining SMPS are
+	 * ARC/corner rails owned by RPMh and stay hidden on purpose.
+	 */
+	RPMH_VREG("smps10", "smp%s10", &pmic5_hfsmps510, "vdd-s10"),
 	RPMH_VREG("ldo1",   "ldo%s1",  &pmic5_nldo,      "vdd-l1-l4"),
 	RPMH_VREG("ldo2",   "ldo%s2",  &pmic5_pldo,      "vdd-l2-l7"),
 	RPMH_VREG("ldo3",   "ldo%s3",  &pmic5_nldo,      "vdd-l3-l5"),
