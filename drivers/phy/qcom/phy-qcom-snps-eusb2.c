@@ -10,10 +10,15 @@
 #include <dm.h>
 #include <dm/device_compat.h>
 #include <dm/devres.h>
+#include <dm/ofnode.h>
+#include <dm/read.h>
 #include <generic-phy.h>
+#include <i2c.h>
 #include <malloc.h>
+#include <power/regulator.h>
 #include <reset.h>
 
+#include <asm/gpio.h>
 #include <asm/io.h>
 #include <linux/bitops.h>
 #include <linux/bitfield.h>
@@ -174,6 +179,15 @@ static int qcom_eusb2_ref_clk_init(struct qcom_snps_eusb2_phy_priv *qcom_snps_eu
 {
 	unsigned long ref_clk_freq = clk_get_rate(qcom_snps_eusb2->ref_clk);
 
+	/*
+	 * The RPMh clock controller is stubbed on a number of Qualcomm platforms
+	 * (see drivers/clk/clk-stub.c) and therefore reports a rate of 0, since
+	 * nothing ever programs it.  The XO feeding this PHY is 19.2 MHz there,
+	 * so fall back to that instead of bailing out with -EINVAL.
+	 */
+	if (!ref_clk_freq)
+		ref_clk_freq = 19200000;
+
 	switch (ref_clk_freq) {
 	case 19200000:
 		qcom_snps_eusb2_hsphy_write_mask(qcom_snps_eusb2->base, USB_PHY_HS_PHY_CTRL_COMMON0,
@@ -290,12 +304,131 @@ static int qcom_snps_eusb2_usb_init(struct phy *phy)
 	return 0;
 }
 
+/*
+ * Many boards route the eUSB2 bus through an external eUSB2-to-USB2 repeater
+ * (for example the NXP PTN3222), referenced from the "phys" property of this
+ * PHY node.  It has to be powered and taken out of reset before the SoC side
+ * PHY can drive the bus.
+ *
+ * The optional tuning tables live in "qcom,param-override-seq" as a list of
+ * (value, register) pairs, matching the downstream binding.  Tuning is best
+ * effort - the repeater works with its default values, these only improve
+ * signal quality.
+ */
+static void qcom_eusb2_repeater_tune(ofnode node)
+{
+	struct udevice *bus, *chip;
+	u32 seq[16], addr;
+	ofnode bus_node;
+	int n, i, ret;
+
+	if (ofnode_read_u32(node, "reg", &addr))
+		return;
+
+	n = ofnode_read_size(node, "qcom,param-override-seq") / sizeof(u32);
+	if (n <= 0 || n > ARRAY_SIZE(seq) || (n % 2))
+		return;
+
+	if (ofnode_read_u32_array(node, "qcom,param-override-seq", seq, n))
+		return;
+
+	bus_node = ofnode_get_parent(node);
+	ret = uclass_get_device_by_ofnode(UCLASS_I2C, bus_node, &bus);
+	if (ret) {
+		log_debug("%s: no i2c bus for repeater (%d)\n", __func__, ret);
+		return;
+	}
+
+	/* This also sanity-checks that the repeater answers on the bus */
+	ret = dm_i2c_probe(bus, addr, 0, &chip);
+	if (ret) {
+		log_debug("%s: repeater not answering at 0x%02x (%d)\n",
+			  __func__, addr, ret);
+		return;
+	}
+
+	for (i = 0; i + 1 < n; i += 2) {
+		ret = dm_i2c_reg_write(chip, seq[i + 1], seq[i]);
+		if (ret) {
+			log_debug("%s: tune write reg 0x%02x failed (%d)\n",
+				  __func__, seq[i + 1], ret);
+			return;
+		}
+	}
+
+	log_debug("%s: applied %d tuning writes\n", __func__, n / 2);
+}
+
+static void qcom_eusb2_repeater_enable(struct udevice *dev)
+{
+	struct ofnode_phandle_args args, rargs;
+	struct udevice *reg;
+	struct gpio_desc reset;
+	int ret;
+
+	ret = dev_read_phandle_with_args(dev, "phys", NULL, 0, 0, &args);
+	if (ret) {
+		log_debug("%s: no repeater phandle (%d)\n", __func__, ret);
+		return;
+	}
+
+	/*
+	 * vdd3 is an RPMh LDO which U-Boot does control.  vdd18 is a PMIC SMPS
+	 * that the U-Boot RPMh regulator driver deliberately does not model
+	 * (its SMPS entries are compiled out); it is already enabled by the
+	 * previous bootloader, so treat it as best effort here.
+	 */
+	ret = ofnode_parse_phandle_with_args(args.node, "vdd3-supply",
+					     NULL, 0, 0, &rargs);
+	if (!ret) {
+		ret = uclass_get_device_by_ofnode(UCLASS_REGULATOR, rargs.node,
+						  &reg);
+		if (!ret) {
+			regulator_set_enable(reg, true);
+			log_debug("%s: vdd3 enabled\n", __func__);
+		} else {
+			log_err("%s: vdd3 unavailable (%d)\n", __func__, ret);
+		}
+	}
+
+	ret = ofnode_parse_phandle_with_args(args.node, "vdd18-supply",
+					     NULL, 0, 0, &rargs);
+	if (!ret) {
+		ret = uclass_get_device_by_ofnode(UCLASS_REGULATOR, rargs.node,
+						  &reg);
+		if (!ret) {
+			regulator_set_enable(reg, true);
+			log_debug("%s: vdd18 enabled\n", __func__);
+		} else {
+			log_debug("%s: vdd18 not modelled (%d), assuming on\n",
+				  __func__, ret);
+		}
+	}
+
+	/* Release the repeater reset (DT describes it as active low) */
+	ret = gpio_request_by_name_nodev(args.node, "reset-gpios", 0, &reset,
+					 GPIOD_IS_OUT);
+	if (ret) {
+		log_err("%s: no repeater reset gpio (%d)\n", __func__, ret);
+		return;
+	}
+
+	dm_gpio_set_value(&reset, 0);
+	mdelay(1);
+
+	/* Reset has been released, now program the board tuning tables */
+	qcom_eusb2_repeater_tune(args.node);
+
+	log_debug("%s: eUSB2 repeater enabled\n", __func__);
+}
+
 static int qcom_snps_eusb2_phy_power_on(struct phy *phy)
 {
 	struct qcom_snps_eusb2_phy_priv *qcom_snps_eusb2 = dev_get_priv(phy->dev);
 	int ret;
 
-	/* TODO Repeater */
+	/* Bring up the external eUSB2 repeater first, when the board has one */
+	qcom_eusb2_repeater_enable(phy->dev);
 
 	clk_prepare_enable(qcom_snps_eusb2->ref_clk);
 
