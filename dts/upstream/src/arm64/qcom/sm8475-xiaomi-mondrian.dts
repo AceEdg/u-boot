@@ -484,11 +484,14 @@
 		reg = <0x4f>;
 		vdd18-supply = <&pm8350_s10>;
 		vdd3-supply = <&pm8350_l2>;
-		reset-gpio = <&pm8350c_gpios 7 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&pm8350c_gpios 7 GPIO_ACTIVE_LOW>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&eusb2_reset_ctrl_default>;
 		#phy-cells = <0>;
-		qcom,param-override-seq = <0x50 0x06 0x00 0x07 0x63 0x08 0x03 0x0a>;
+		/* Xiaomi mondrian values: Rx squelch 110mV, Tx deemphasis 2dB,
+		 * output swing 500mV (see downstream eusb2-i2c-repeater.txt)
+		 */
+		qcom,param-override-seq = <0x40 0x06 0x22 0x07 0x63 0x08>;
 		qcom,param-override-seq-host = <0x40 0x06 0x21 0x07 0x64 0x08 0x03 0x0a>;
 	};
 
@@ -531,7 +534,12 @@
 &pm8350_gpios {
 	key_volp_n: key-volp-n-state {
 		pins = "gpio6";
-		function = PMIC_GPIO_FUNC_NORMAL;
+		/* No "function" property: U-Boot's generic pinctrl compares it as
+		 * a string, but the PMIC binding makes it a number (0), which
+		 * aborts the whole state application with -ENOENT.  U-Boot's
+		 * PMIC pinmux is a no-op anyway, so leaving it out is fine and
+		 * lets bias-pull-up below actually be applied.
+		 */
 		bias-pull-up;
 		input-enable;
 		power-source = <1>;
