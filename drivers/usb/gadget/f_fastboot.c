@@ -406,7 +406,15 @@ static int fastboot_tx_write(const char *buffer, unsigned int buffer_size)
 	memcpy(in_req->buf, buffer, buffer_size);
 	in_req->length = buffer_size;
 
-	usb_ep_dequeue(fastboot_func->in_ep, in_req);
+	/*
+	 * Cancel the previous transfer only if it is still in flight - the
+	 * request has to be free before it can be queued again.  Once the
+	 * controller has completed it, usb_ep_dequeue() would be handed a
+	 * request that is no longer on the endpoint's lists, and controllers
+	 * like DWC3 log a "request was not queued" error for that.
+	 */
+	if (in_req->status == -EINPROGRESS)
+		usb_ep_dequeue(fastboot_func->in_ep, in_req);
 
 	ret = usb_ep_queue(fastboot_func->in_ep, in_req, 0);
 	if (ret)
