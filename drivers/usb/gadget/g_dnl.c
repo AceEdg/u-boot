@@ -295,16 +295,21 @@ int g_dnl_register(const char *name)
 
 	/*
 	 * Every g_dnl function shares this single device descriptor, but the
-	 * host picks a driver from the VID/PID pair.  Use the identifiers that
-	 * make the host attach the correct driver to the function being
+	 * host picks a driver from the VID/PID pair, so use the identifiers
+	 * that make it attach the right driver to the function being
 	 * registered.
 	 *
-	 * The serial console gadget must not reuse the Android fastboot IDs:
-	 * Windows would claim the device with its fastboot driver and no
-	 * virtual COM port would ever show up.  The standard Linux USB gadget
-	 * serial IDs make Windows attach its built-in CDC ACM driver instead.
+	 * Only fastboot may use the Android fastboot IDs.  Reusing them for
+	 * another function makes Windows claim the device with its fastboot
+	 * driver instead of the one that would actually work, so nothing shows
+	 * up - no disk for mass storage, no COM port for the serial console.
+	 * The standard Linux USB gadget IDs below have built-in host drivers.
 	 */
-	if (!strcmp(name, "usb_serial_acm")) {
+	if (!strcmp(name, "usb_dnl_ums")) {
+		device_desc.idVendor = cpu_to_le16(0x0525);
+		device_desc.idProduct = cpu_to_le16(0xa4a5);
+		g_dnl_string_defs[1].s = "U-Boot UMS";
+	} else if (!strcmp(name, "usb_serial_acm")) {
 		device_desc.idVendor = cpu_to_le16(0x0525);
 		device_desc.idProduct = cpu_to_le16(0xa4a7);
 		g_dnl_string_defs[1].s = "U-Boot serial console";
